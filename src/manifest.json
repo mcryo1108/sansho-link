@@ -1,0 +1,20 @@
+{
+  "manifest_version": 2,
+  "name": "参照リンク (Independent)",
+  "version": "1.1.0",
+  "icons": {
+    "48": "icon.png",
+    "96": "icon@2x.png"
+  },
+  "description": "Independent Zotero reference links with bibliography boundary detection and library refresh.",
+  "author": "Masuda local fork; original by ottersem",
+  "applications": {
+    "zotero": {
+      "id": "sansho-link@masuda.local",
+      "update_url": "https://raw.githubusercontent.com/mcryo1108/sansho-link/main/updates.json",
+      "strict_min_version": "9.0",
+      "strict_max_version": "10.99.99"
+    }
+  },
+  "homepage_url": "https://github.com/mcryo1108/sansho-link"
+}
