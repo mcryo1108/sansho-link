@@ -1198,7 +1198,9 @@ Matched by ${match.method}`;
     matcherCache = /* @__PURE__ */ new Map();
     notifierID;
     toolbarHandler = (event) => this.onToolbar(event);
+    stopped = false;
     start() {
+      this.stopped = false;
       this.zotero.Reader.registerEventListener("renderToolbar", this.toolbarHandler, this.pluginID);
       this.notifierID = this.zotero.Notifier?.registerObserver({ notify: () => {
         this.matcherCache.clear();
@@ -1208,8 +1210,28 @@ Matched by ${match.method}`;
           this.scheduleScan(reader);
         }
       } }, ["item"], this.pluginID);
+      // renderToolbar is emitted when a toolbar mounts. Updating/enabling a
+      // plugin does not replay it for PDFs which are already open.
+      for (const reader of this.zotero.Reader._readers || []) {
+        Promise.resolve(reader._initPromise).then(() => {
+          if (!this.stopped) this.restoreOpenReader(reader);
+        }).catch(error => this.zotero.logError(error));
+      }
+    }
+    restoreOpenReader(reader) {
+      const doc = reader._iframeWindow?.document;
+      const host = doc?.querySelector(".toolbar .end .custom-sections");
+      if (!host) return;
+      this.onToolbar({ reader, doc, append: button => {
+        const section = doc.createElement("div");
+        section.className = "section";
+        section.setAttribute("data-sansho-link-section", "true");
+        section.append(button);
+        host.append(section);
+      } });
     }
     stop() {
+      this.stopped = true;
       this.zotero.Reader.unregisterEventListener("renderToolbar", this.toolbarHandler);
       if (this.notifierID != null) this.zotero.Notifier?.unregisterObserver(this.notifierID);
       this.matcherCache.clear();
@@ -1217,7 +1239,13 @@ Matched by ${match.method}`;
       this.readers.clear();
     }
     onToolbar({ reader, doc, append }) {
-      if (!doc || !append) return;
+      if (!doc || !append || this.stopped) return;
+      // Remove only our own control, including one left by an older version.
+      doc.querySelectorAll('button[aria-label="参照リンク：参考文献を再スキャン"]').forEach(node => {
+        const section = node.closest('[data-sansho-link-section="true"]');
+        node.remove();
+        section?.remove();
+      });
       const button = doc.createElement("button");
       button.type = "button";
       button.className = "toolbar-button";
@@ -1248,9 +1276,12 @@ Matched by ${match.method}`;
       if (state.summaryTimer) state.summary?.ownerDocument.defaultView?.clearTimeout(state.summaryTimer);
       state.summary?.remove();
       state.summary = summary;
+      state.toolbarButton = button;
+      state.fingerprint = void 0;
       state.summaryTimer = void 0;
       this.states.set(reader, state);
       this.attach(reader);
+      this.scheduleScan(reader, 1200);
     }
     attach(reader) {
       this.readers.add(reader);
@@ -1280,21 +1311,25 @@ Matched by ${match.method}`;
     scheduleScan(reader, delay = 500) {
       const state = this.states.get(reader);
       const win = reader._iframeWindow;
-      if (!state || !win) return;
+      if (!state || !win || this.stopped) return;
       if (state.timer) win.clearTimeout(state.timer);
-      state.timer = win.setTimeout(() => void this.scan(reader, false), delay);
+      state.timer = win.setTimeout(() => {
+        void this.scan(reader, false).catch(() => {}); // scan already logs errors
+      }, delay);
     }
     async scan(reader, reportEmpty, force = false) {
       const state = this.states.get(reader);
       const doc = this.getViewerDocument(reader);
-      if (!state || !doc || state.scanning) return void 0;
+      if (!state || !doc || state.scanning || this.stopped) return void 0;
       this.observeViewer(reader, doc);
       const fingerprint = this.pageFingerprint(doc);
       if (!force && state.fingerprint === fingerprint) return state.lastMatched;
       state.fingerprint = fingerprint;
       state.scanning = true;
       try {
+        if (force) state.sectionPromise = void 0;
         const section = await this.getReferenceSection(reader, state);
+        if (this.stopped) return void 0;
         if (!section) {
           if (reportEmpty && state.summary) {
             state.summary.textContent = "参考文献一覧を検出できませんでした";
@@ -1308,6 +1343,7 @@ Matched by ${match.method}`;
         const currentItemID = typeof attachment.parentID === "number" ? attachment.parentID : void 0;
         if (force) this.matcherCache.delete(attachment.libraryID);
         const matcher = await this.getMatcher(attachment.libraryID);
+        if (this.stopped) return void 0;
         if (!state.overlay || state.overlayDocument !== doc) {
           state.overlay?.destroy();
           state.overlay = new ReferenceOverlay(
@@ -1358,7 +1394,12 @@ Matched by ${match.method}`;
         state.lastMatched = linked;
         return linked;
       } catch (error) {
+        state.fingerprint = void 0; // A transient load error must be retryable.
         this.zotero.logError(error);
+        if (reportEmpty && state.summary) {
+          state.summary.textContent = "参照リンクの読み込みに失敗しました。再スキャンしてください";
+          state.summary.style.display = "block";
+        }
         throw error;
       } finally {
         state.scanning = false;
@@ -1368,9 +1409,12 @@ Matched by ${match.method}`;
       if (!state.sectionPromise) {
         const pdf = this.getPdfDocument(reader);
         if (!pdf) return Promise.resolve(void 0);
-        state.sectionPromise = this.sectionExtractor.extract(pdf);
-        state.sectionPromise.catch(() => {
-          state.sectionPromise = void 0;
+        const pending = this.sectionExtractor.extract(pdf);
+        state.sectionPromise = pending;
+        pending.then(section => {
+          if ((!section || !section.references.length) && state.sectionPromise === pending) state.sectionPromise = void 0;
+        }, () => {
+          if (state.sectionPromise === pending) state.sectionPromise = void 0;
         });
       }
       return state.sectionPromise;
@@ -1490,6 +1534,10 @@ Matched by ${match.method}`;
       state?.viewerObserver?.disconnect();
       state?.overlay?.destroy();
       state?.summary?.remove();
+      const button = state?.toolbarButton;
+      const section = button?.closest('[data-sansho-link-section="true"]');
+      button?.remove();
+      section?.remove();
       const win = reader._iframeWindow;
       if (state?.timer && win) win.clearTimeout(state.timer);
       if (state?.summaryTimer) state.summary?.ownerDocument.defaultView?.clearTimeout(state.summaryTimer);

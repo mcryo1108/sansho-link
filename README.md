@@ -4,7 +4,7 @@ ZoteroのPDF内の参考文献を検出し、ライブラリ内の文献・添�
 
 ## インストールと更新
 
-1. [配布ファイル](https://raw.githubusercontent.com/mcryo1108/sansho-link/main/dist/sansho-link-1.1.1.xpi)を保存します。
+1. [配布ファイル](https://raw.githubusercontent.com/mcryo1108/sansho-link/main/dist/sansho-link-1.1.2.xpi)を保存します。
 2. ZoteroのPlugins Managerで歯車 → Install Plugin From FileからXPIを選びます。
 3. PDFを開き直し、参考文献のページで「参照 ↗」を押します。
 
@@ -19,6 +19,15 @@ ZoteroのPDF内の参考文献を検出し、ライブラリ内の文献・添�
 - 無着色：参考文献範囲や表示位置を特定できていない可能性があります。
 
 PDFにテキスト層が必要です。画像のみのPDFのOCRは行いません。画面に読み込まれたページへリンクを描画するため、参考文献ページまで移動して再スキャンしてください。
+
+## 1.1.2の変更
+
+- 更新・有効化の時点ですでに開いているPDFにも接続し、ボタンとリンク表示を復帰。
+- ツールバーの重複を防ぎ、停止時に自分のボタンと表示だけを削除。
+- 一時的な読み込み失敗や空の検出結果を固定せず、再試行を可能に。
+- 停止後に待機中の処理が表示を復活させないように修正。
+
+Zotero 10本体が表示する薄青の自動リンク範囲は、この版では変更しません。標準の自動内部リンク判定が広い範囲を囲む場合があります。
 
 ## 1.1.1の変更
 
@@ -39,7 +48,7 @@ Zotero 10.0.6の更新判定コードとPDFテキストを使った回帰検証�
 
 Python 3で `python3 build.py` を実行します。追加ライブラリは不要です。`src/`からXPIと`updates.json`を生成します。新しい版を配布するときは`src/manifest.json`のversionを変更し、生成したdistファイルとupdates.jsonを同じコミットで公開してください。公開済みの版番号のXPIを別内容へ置き換えないでください。
 
-Node.jsがあれば `node tests/smoke.mjs` で先頭番号の回帰テストを実行できます。合成テキストと模擬DOMを使うテストで、Zotero実画面の検証ではありません。
+Node.jsがあれば `node tests/smoke.mjs` で先頭番号の回帰テスト、`node tests/lifecycle.mjs` で開いているPDFへの接続・停止・再試行の回帰テストを実行できます。合成テキストと模擬DOMを使うテストで、Zotero実画面の検証ではありません。
 
 ## ライセンス
 
