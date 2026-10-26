@@ -1199,32 +1199,62 @@ Matched by ${match.method}`;
       const x = (glyph[0] + glyph[2]) / 2, y = (glyph[1] + glyph[3]) / 2;
       return x >= rect[0] - .05 && x <= rect[2] + .05 && y >= rect[1] - .05 && y <= rect[3] + .05;
     }
+    sourceGlyphs(overlay, chars) {
+      const sort = typeof overlay.sortIndex === "string" ? overlay.sortIndex.match(/^\d+\|(\d+)\|/) : null;
+      if (!sort) return;
+      const offset = Number(sort[1]);
+      const start = chars.findIndex(c => c?.offset === offset);
+      if (start < 0 || chars.filter(c => c?.offset === offset).length !== 1) return;
+      const boundary = c => c.spaceAfter || c.lineBreakAfter || c.paragraphBreakAfter || c.c === ")" || /^\s+$/.test(c.c || "");
+      const endWord = from => {
+        for (let i = from; i < chars.length; i++) if (boundary(chars[i]) || i === chars.length - 1) return i;
+      };
+      const labelEnd = endWord(start);
+      if (labelEnd == null || labelEnd === chars.length - 1) return;
+      // Native matched links consist of a label word and a numeric identifier.
+      // Use their stored word boundaries, not a whitelist of English labels.
+      const label = chars.slice(start, labelEnd + 1).map(c => c.c || "").join("").replace(/^[^\p{L}]+|[^\p{L}]+$/gu, "");
+      if (!/^[\p{L}\p{M}.-]+$/u.test(label) || [...label.matchAll(/\p{L}/gu)].length < 3) return;
+      let numberStart = labelEnd + 1;
+      while (numberStart < chars.length && /^\s+$/.test(chars[numberStart].c || "")) numberStart++;
+      if (!/^\(?\d/.test(chars.slice(numberStart, numberStart + 2).map(c => c.c || "").join(""))) return;
+      const numberEnd = endWord(numberStart);
+      if (numberEnd == null) return;
+      const full = chars.slice(start, numberEnd + 1);
+      if (full.some((c, i) => !this.validRect(c.rect) || c.offset !== offset + i || c.diagonal || (c.rotation || 0) % 90 !== 0)) return;
+      // Reject a guessed token boundary unless it reproduces the native box.
+      const bounds = [Math.min(...full.map(c => c.rect[0])), Math.min(...full.map(c => c.rect[1])), Math.max(...full.map(c => c.rect[2])), Math.max(...full.map(c => c.rect[3]))];
+      if (bounds.some((v, i) => Math.abs(v - overlay.position.rects[0][i]) > .5)) return;
+      if (!full.slice(0, -1).some(c => c.lineBreakAfter)) return;
+      const glyphs = full.filter(c => !/^\s+$/.test(c.c || ""));
+      // A closing parenthesis belonging to surrounding prose isn't a label.
+      const pairs = { ")": "(", "]": "[", "}": "{" };
+      while (glyphs.length) {
+        const last = glyphs.at(-1).c;
+        if (/^[,.;:!?]$/.test(last)) { glyphs.pop(); continue; }
+        if (pairs[last]) {
+          const value = glyphs.map(c => c.c).join("");
+          if ([...value].filter(c => c === last).length > [...value].filter(c => c === pairs[last]).length) { glyphs.pop(); continue; }
+        }
+        break;
+      }
+      return glyphs;
+    }
     narrow(overlay, chars) {
       if (overlay?.type !== "internal-link" || overlay.source !== "matched" ||
           overlay.position?.rects?.length !== 1 || overlay.position.nextPageRects ||
           !Array.isArray(chars)) return overlay;
       const box = overlay.position.rects[0];
       if (!this.validRect(box)) return overlay;
-      const candidates = chars.filter(c => this.validRect(c.rect) && this.contains(box, c.rect));
-      let text = "", mapping = [];
-      for (const char of candidates) {
-        const value = char.u || char.c || "";
-        for (const unit of value) { text += unit; for (let i = 0; i < unit.length; i++) mapping.push(char); }
-        if (char.spaceAfter) { text += " "; mapping.push(null); }
-      }
-      // The native sort index records the first glyph of the intended label.
-      // Require that anchor when available; never choose a neighbouring label.
-      const sort = typeof overlay.sortIndex === "string" ? overlay.sortIndex.match(/^\d+\|(\d+)\|/) : null;
-      const anchor = sort ? Number(sort[1]) : null;
-      const matches = [...text.matchAll(/\b(?:Lemma|Theorem|Corollary|Proposition|Definition|Remark)\s*\d+(?:\.\d+)*[a-z]?\b/gi)]
-        .filter(m => anchor == null || mapping[m.index]?.offset === anchor);
-      if (matches.length !== 1) return overlay;
-      const match = matches[0];
-      const glyphs = [...new Set(mapping.slice(match.index, match.index + match[0].length).filter(Boolean))];
-      if (!glyphs.length || glyphs.some(c => c.rotation || c.diagonal)) return overlay;
+      const glyphs = this.sourceGlyphs(overlay, chars);
+      if (!glyphs?.length) return overlay;
+      const rotations = new Set(glyphs.map(c => ((c.rotation || 0) % 360 + 360) % 360));
+      if (rotations.size !== 1) return overlay;
+      const vertical = [...rotations][0] % 180 === 90;
       const lines = [];
       for (const glyph of glyphs) {
-        const rect = glyph.rect, center = (rect[1] + rect[3]) / 2, height = rect[3] - rect[1];
+        const rect = glyph.rect, center = vertical ? (rect[0] + rect[2]) / 2 : (rect[1] + rect[3]) / 2;
+        const height = vertical ? rect[2] - rect[0] : rect[3] - rect[1];
         let line = lines.find(l => Math.abs(l.center - center) <= Math.min(l.height, height) * .4);
         if (!line) { line = { center, height, rect: [...rect] }; lines.push(line); }
         else line.rect = [Math.min(line.rect[0], rect[0]), Math.min(line.rect[1], rect[1]), Math.max(line.rect[2], rect[2]), Math.max(line.rect[3], rect[3])];
@@ -1232,7 +1262,7 @@ Matched by ${match.method}`;
       const rects = lines.map(l => l.rect);
       const area = rects.reduce((sum, rect) => sum + this.area(rect), 0);
       // Already-tight boxes and unsupported layouts stay untouched.
-      if (!area || area >= this.area(box) * .55 || rects.some(r =>
+      if (rects.length < 2 || !area || area >= this.area(box) * .98 || rects.some(r =>
         r[0] < box[0] - .5 || r[1] < box[1] - .5 || r[2] > box[2] + .5 || r[3] > box[3] + .5)) return overlay;
       const corrected = { ...overlay, position: { ...overlay.position, rects } };
       this.originals.set(corrected, overlay);
