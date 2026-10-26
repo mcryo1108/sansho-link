@@ -848,7 +848,8 @@ var SanshoLink = (() => {
   function findIndexedReferenceMarkers(text) {
     return [...text.matchAll(/\[\s*(\d{1,4})\s*\]|(?:^|\s)(\d{1,4})[.)](?=\s+(?:[A-ZÀ-ÖØ-Þ]\.\s*|[A-ZÀ-ÖØ-Þ][\p{L}’\x27-]+\s*[,;]))/gu)].map((match) => ({
       index: Number(match[1] || match[2]),
-      start: match.index + (match[2] ? match[0].search(/\d/) : 0)
+      start: match.index + (match[2] ? match[0].search(/\d/) : 0),
+      end: match.index + match[0].length
     }));
   }
   var ReferenceOverlay = class _ReferenceOverlay {
@@ -974,7 +975,16 @@ Matched by ${match.method}`;
           const compact = this.compactText(joined.text);
           const prefix = this.compactText(references[0].raw).text.slice(0, 100);
           const location = prefix.length >= 24 ? this.findCompactText(compact.text, prefix, 0) : void 0;
-          if (location) searchableStart = Math.max(searchableStart, compact.offsets[location.start]);
+          if (location) {
+            const anchor = compact.offsets[location.start];
+            // Normalization removes punctuation: a leading "[1]" anchors at
+            // the digit, inside its label. Keep the whole label in the range.
+            // Also handle an extractor that omits the label from raw text.
+            const label = findIndexedReferenceMarkers(joined.text).find(marker =>
+              marker.index === references[0].index && marker.start <= anchor &&
+              (anchor < marker.end || /^\s*$/.test(joined.text.slice(marker.end, anchor))));
+            searchableStart = Math.max(searchableStart, label?.start ?? anchor);
+          }
         }
         const searchableText = joined.text.slice(searchableStart, searchableEnd);
         this.pages.push({

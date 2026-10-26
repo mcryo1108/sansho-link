@@ -4,7 +4,7 @@ ZoteroのPDF内の参考文献を検出し、ライブラリ内の文献・添�
 
 ## インストールと更新
 
-1. [配布ファイル](https://raw.githubusercontent.com/mcryo1108/sansho-link/main/dist/sansho-link-1.1.0.xpi)を保存します。
+1. [配布ファイル](https://raw.githubusercontent.com/mcryo1108/sansho-link/main/dist/sansho-link-1.1.1.xpi)を保存します。
 2. ZoteroのPlugins Managerで歯車 → Install Plugin From FileからXPIを選びます。
 3. PDFを開き直し、参考文献のページで「参照 ↗」を押します。
 
@@ -20,6 +20,11 @@ ZoteroのPDF内の参考文献を検出し、ライブラリ内の文献・添�
 
 PDFにテキスト層が必要です。画像のみのPDFのOCRは行いません。画面に読み込まれたページへリンクを描画するため、参考文献ページまで移動して再スキャンしてください。
 
+## 1.1.1の変更
+
+- 参考文献一覧の最初の番号の左かっこが範囲から外れ、先頭1件だけ着色されない問題を修正。
+- 番号形式・空白・本文中の同じ番号を含む、先頭項目の回帰テストを追加。
+
 ## 1.1.0の変更
 
 - 本文や図説明の番号を参考文献番号と取り違える問題を修正。
@@ -33,6 +38,8 @@ Zotero 10.0.6の更新判定コードとPDFテキストを使った回帰検証�
 ## ビルド
 
 Python 3で `python3 build.py` を実行します。追加ライブラリは不要です。`src/`からXPIと`updates.json`を生成します。新しい版を配布するときは`src/manifest.json`のversionを変更し、生成したdistファイルとupdates.jsonを同じコミットで公開してください。公開済みの版番号のXPIを別内容へ置き換えないでください。
+
+Node.jsがあれば `node tests/smoke.mjs` で先頭番号の回帰テストを実行できます。合成テキストと模擬DOMを使うテストで、Zotero実画面の検証ではありません。
 
 ## ライセンス
 
