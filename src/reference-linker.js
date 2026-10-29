@@ -855,13 +855,17 @@ var SanshoLink = (() => {
   var ReferenceOverlay = class _ReferenceOverlay {
     constructor(doc, onOpen, onOpenURL = (url) => {
       doc.defaultView?.open(url, "_blank", "noopener");
-    }, onCopyTitle) {
+    }, onCopyTitle, hasReaderSelection = () => false) {
       this.doc = doc;
       this.onOpen = onOpen;
       this.onOpenURL = onOpenURL;
       this.onCopyTitle = onCopyTitle;
+      this.hasReaderSelection = hasReaderSelection;
       this.installStyle();
       this.doc.addEventListener("click", this.clickHandler, true);
+      for (const type of ["pointerdown", "mousedown", "pointermove", "mousemove", "pointerup", "mouseup", "pointercancel"]) {
+        this.doc.addEventListener(type, this.gestureHandler, true);
+      }
     }
     static styleID = "sansho-link-style";
     pages = [];
@@ -871,9 +875,32 @@ var SanshoLink = (() => {
     renderedReferences = /* @__PURE__ */ new Set();
     originalTitles = new Map();
     menu;
+    gesture;
+    gestureHandler = (event) => {
+      if (event.type === "pointerdown" || event.type === "mousedown") {
+        // A compatibility mousedown follows pointerdown; keep the same gesture.
+        if (event.button !== 0) { this.gesture = null; return; }
+        if (event.type === "mousedown" && this.gesture?.active) return;
+        this.gesture = { x: event.clientX, y: event.clientY, active: true, dragged: false };
+      } else if (this.gesture) {
+        if (Math.hypot(event.clientX - this.gesture.x, event.clientY - this.gesture.y) > 4) this.gesture.dragged = true;
+        if (["pointerup", "mouseup", "pointercancel"].includes(event.type)) this.gesture.active = false;
+        if (event.type === "pointercancel") this.gesture.dragged = true;
+      }
+      // Observation only: Zotero must receive every selection event unchanged.
+    };
+    shouldPreserveSelection(event) {
+      const dragged = this.gesture?.dragged;
+      this.gesture = null;
+      if (event.button > 0 || event.detail > 1 || event.shiftKey || event.altKey) return true;
+      // Zotero draws its own selection, which may not appear in getSelection().
+      return Boolean(dragged || this.hasReaderSelection() ||
+        this.doc.defaultView?.getSelection?.()?.isCollapsed === false);
+    }
     clickHandler = (event) => {
       const target = event.target instanceof this.doc.defaultView.Element ? event.target : null;
       if (target?.closest(".sansho-link-menu")) return;
+      if (this.shouldPreserveSelection(event)) return;
       const hit = target?.closest(".sansho-link-hit");
       const match = hit ? this.hits.get(hit) : void 0;
       if (match) {
@@ -1088,6 +1115,10 @@ Matched by ${match.method}`;
     destroy() {
       this.clear();
       this.doc.removeEventListener("click", this.clickHandler, true);
+      for (const type of ["pointerdown", "mousedown", "pointermove", "mousemove", "pointerup", "mouseup", "pointercancel"]) {
+        this.doc.removeEventListener(type, this.gestureHandler, true);
+      }
+      this.gesture = null;
       this.doc.getElementById(_ReferenceOverlay.styleID)?.remove();
     }
     showMenu(anchor, citation) {
@@ -1185,151 +1216,16 @@ Matched by ${match.method}`;
     }
   };
 
-  // Runtime-only correction for an oversized automatically matched internal link.
-  // PDF bytes, annotations, destinations and tint colors are never changed.
-  var NativeLinkBounds = class {
-    constructor(onError = () => {}) { this.onError = onError; }
-    patches = new Map();
-    originals = new WeakMap();
-    validRect(rect) {
-      return Array.isArray(rect) && rect.length === 4 && rect.every(Number.isFinite) && rect[2] > rect[0] && rect[3] > rect[1];
-    }
-    area(rect) { return (rect[2] - rect[0]) * (rect[3] - rect[1]); }
-    contains(rect, glyph) {
-      const x = (glyph[0] + glyph[2]) / 2, y = (glyph[1] + glyph[3]) / 2;
-      return x >= rect[0] - .05 && x <= rect[2] + .05 && y >= rect[1] - .05 && y <= rect[3] + .05;
-    }
-    sourceGlyphs(overlay, chars) {
-      const sort = typeof overlay.sortIndex === "string" ? overlay.sortIndex.match(/^\d+\|(\d+)\|/) : null;
-      if (!sort) return;
-      const offset = Number(sort[1]);
-      const start = chars.findIndex(c => c?.offset === offset);
-      if (start < 0 || chars.filter(c => c?.offset === offset).length !== 1) return;
-      const boundary = c => c.spaceAfter || c.lineBreakAfter || c.paragraphBreakAfter || c.c === ")" || /^\s+$/.test(c.c || "");
-      const endWord = from => {
-        for (let i = from; i < chars.length; i++) if (boundary(chars[i]) || i === chars.length - 1) return i;
-      };
-      const labelEnd = endWord(start);
-      if (labelEnd == null || labelEnd === chars.length - 1) return;
-      // Native matched links consist of a label word and a numeric identifier.
-      // Use their stored word boundaries, not a whitelist of English labels.
-      const label = chars.slice(start, labelEnd + 1).map(c => c.c || "").join("").replace(/^[^\p{L}]+|[^\p{L}]+$/gu, "");
-      if (!/^[\p{L}\p{M}.-]+$/u.test(label) || [...label.matchAll(/\p{L}/gu)].length < 3) return;
-      let numberStart = labelEnd + 1;
-      while (numberStart < chars.length && /^\s+$/.test(chars[numberStart].c || "")) numberStart++;
-      if (!/^\(?\d/.test(chars.slice(numberStart, numberStart + 2).map(c => c.c || "").join(""))) return;
-      const numberEnd = endWord(numberStart);
-      if (numberEnd == null) return;
-      const full = chars.slice(start, numberEnd + 1);
-      if (full.some((c, i) => !this.validRect(c.rect) || c.offset !== offset + i || c.diagonal || (c.rotation || 0) % 90 !== 0)) return;
-      // Reject a guessed token boundary unless it reproduces the native box.
-      const bounds = [Math.min(...full.map(c => c.rect[0])), Math.min(...full.map(c => c.rect[1])), Math.max(...full.map(c => c.rect[2])), Math.max(...full.map(c => c.rect[3]))];
-      if (bounds.some((v, i) => Math.abs(v - overlay.position.rects[0][i]) > .5)) return;
-      if (!full.slice(0, -1).some(c => c.lineBreakAfter)) return;
-      const glyphs = full.filter(c => !/^\s+$/.test(c.c || ""));
-      // A closing parenthesis belonging to surrounding prose isn't a label.
-      const pairs = { ")": "(", "]": "[", "}": "{" };
-      while (glyphs.length) {
-        const last = glyphs.at(-1).c;
-        if (/^[,.;:!?]$/.test(last)) { glyphs.pop(); continue; }
-        if (pairs[last]) {
-          const value = glyphs.map(c => c.c).join("");
-          if ([...value].filter(c => c === last).length > [...value].filter(c => c === pairs[last]).length) { glyphs.pop(); continue; }
-        }
-        break;
-      }
-      return glyphs;
-    }
-    narrow(overlay, chars) {
-      if (overlay?.type !== "internal-link" || overlay.source !== "matched" ||
-          overlay.position?.rects?.length !== 1 || overlay.position.nextPageRects ||
-          !Array.isArray(chars)) return overlay;
-      const box = overlay.position.rects[0];
-      if (!this.validRect(box)) return overlay;
-      const glyphs = this.sourceGlyphs(overlay, chars);
-      if (!glyphs?.length) return overlay;
-      const rotations = new Set(glyphs.map(c => ((c.rotation || 0) % 360 + 360) % 360));
-      if (rotations.size !== 1) return overlay;
-      const vertical = [...rotations][0] % 180 === 90;
-      const lines = [];
-      for (const glyph of glyphs) {
-        const rect = glyph.rect, center = vertical ? (rect[0] + rect[2]) / 2 : (rect[1] + rect[3]) / 2;
-        const height = vertical ? rect[2] - rect[0] : rect[3] - rect[1];
-        let line = lines.find(l => Math.abs(l.center - center) <= Math.min(l.height, height) * .4);
-        if (!line) { line = { center, height, rect: [...rect] }; lines.push(line); }
-        else line.rect = [Math.min(line.rect[0], rect[0]), Math.min(line.rect[1], rect[1]), Math.max(line.rect[2], rect[2]), Math.max(line.rect[3], rect[3])];
-      }
-      const rects = lines.map(l => l.rect);
-      const area = rects.reduce((sum, rect) => sum + this.area(rect), 0);
-      // Already-tight boxes and unsupported layouts stay untouched.
-      if (rects.length < 2 || !area || area >= this.area(box) * .98 || rects.some(r =>
-        r[0] < box[0] - .5 || r[1] < box[1] - .5 || r[2] > box[2] + .5 || r[3] > box[3] + .5)) return overlay;
-      const corrected = { ...overlay, position: { ...overlay.position, rects } };
-      this.originals.set(corrected, overlay);
-      return corrected;
-    }
-    correctPageData(data) {
-      if (!Array.isArray(data?.overlays) || !Array.isArray(data.chars)) return data;
-      const overlays = data.overlays.map(o => this.narrow(o, data.chars));
-      return overlays.some((o, i) => o !== data.overlays[i]) ? { ...data, overlays } : data;
-    }
-    restorePageData(data) {
-      if (!Array.isArray(data?.overlays)) return data;
-      const overlays = data.overlays.map(o => this.originals.get(o) || o);
-      return overlays.some((o, i) => o !== data.overlays[i]) ? { ...data, overlays } : data;
-    }
-    replacePage(view, key, corrected) {
-      const previous = view._pdfPages[key];
-      if (previous === corrected) return;
-      // A live hover/preview can still point at the old overlay object.
-      for (let i = 0; i < previous.overlays.length; i++) {
-        if (view._hover === previous.overlays[i].position) view._hover = corrected.overlays[i].position;
-        if (view._selectedOverlay === previous.overlays[i]) view._selectedOverlay = corrected.overlays[i];
-      }
-      view._pdfPages[key] = corrected;
-    }
-    attachReader(reader) {
-      for (const view of [reader._internalReader?._primaryView, reader._internalReader?._secondaryView]) {
-        if (!view || this.patches.has(view) || typeof view._mergeProcessedPageData !== "function" || !view._pdfPages) continue;
-        const own = Object.getOwnPropertyDescriptor(view, "_mergeProcessedPageData");
-        const original = view._mergeProcessedPageData;
-        const corrector = this;
-        const lease = { active: true };
-        const wrapper = function(...args) {
-          const data = original.apply(this, args);
-          if (!lease.active) return data;
-          try { return corrector.correctPageData(data); }
-          catch (error) { corrector.onError(error); return data; }
-        };
-        try {
-          view._mergeProcessedPageData = wrapper;
-          this.patches.set(view, { reader, own, original, wrapper, lease });
-          for (const key of Object.keys(view._pdfPages)) this.replacePage(view, key, this.correctPageData(view._pdfPages[key]));
-          view._render?.();
-        } catch (error) { this.onError(error); }
-      }
-    }
-    detachReader(reader) {
-      for (const [view, patch] of this.patches) {
-        if (reader && patch.reader !== reader) continue;
-        patch.lease.active = false;
-        if (view._mergeProcessedPageData === patch.wrapper) {
-          if (patch.own) Object.defineProperty(view, "_mergeProcessedPageData", patch.own);
-          else delete view._mergeProcessedPageData;
-        }
-        for (const key of Object.keys(view._pdfPages || {})) this.replacePage(view, key, this.restorePageData(view._pdfPages[key]));
-        try { view._render?.(); } catch (error) { this.onError(error); }
-        this.patches.delete(view);
-      }
-    }
-  };
+  // Do not replace methods or page-data objects inside the PDF reader.
+  // A privileged add-on function returns cross-compartment objects which the
+  // unprivileged reader cannot access (overlays/chars become unreadable).
+  // Keep native page processing and text selection entirely in Zotero's realm.
 
   // src/reader/ReaderIntegration.ts
   var ReaderIntegration = class {
     constructor(zotero, pluginID) {
       this.zotero = zotero;
       this.pluginID = pluginID;
-      this.nativeLinkBounds = new NativeLinkBounds(error => this.zotero.logError(error));
     }
     states = /* @__PURE__ */ new WeakMap();
     readers = /* @__PURE__ */ new Set();
@@ -1427,7 +1323,6 @@ Matched by ${match.method}`;
       this.readers.add(reader);
       const state = this.states.get(reader) || { scanning: false };
       this.states.set(reader, state);
-      this.nativeLinkBounds.attachReader(reader);
       const win = reader._iframeWindow;
       if (!win?.document?.documentElement || state.outerObserver) return;
       const Observer = win.MutationObserver;
@@ -1459,7 +1354,6 @@ Matched by ${match.method}`;
       }, delay);
     }
     async scan(reader, reportEmpty, force = false) {
-      if (!this.stopped) this.nativeLinkBounds.attachReader(reader);
       const state = this.states.get(reader);
       const doc = this.getViewerDocument(reader);
       if (!state || !doc || state.scanning || this.stopped) return void 0;
@@ -1491,7 +1385,10 @@ Matched by ${match.method}`;
           state.overlay = new ReferenceOverlay(
             doc,
             (match) => void this.open(match.record.item.id, match.record.pdfAttachmentID),
-            (url) => this.zotero.launchURL(url)
+            (url) => this.zotero.launchURL(url),
+            undefined,
+            () => [reader._internalReader?._primaryView, reader._internalReader?._secondaryView]
+              .some(view => view?._selectionRanges?.some(range => !range.collapsed))
           );
           state.overlayDocument = doc;
         }
@@ -1671,7 +1568,6 @@ Matched by ${match.method}`;
       await pane?.selectItem(itemID);
     }
     destroyReader(reader) {
-      this.nativeLinkBounds.detachReader(reader);
       const state = this.states.get(reader);
       state?.outerObserver?.disconnect();
       state?.viewerObserver?.disconnect();

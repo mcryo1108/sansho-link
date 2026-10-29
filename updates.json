@@ -3,9 +3,9 @@
     "sansho-link@masuda.local": {
       "updates": [
         {
-          "version": "1.1.4",
-          "update_link": "https://raw.githubusercontent.com/mcryo1108/sansho-link/main/dist/sansho-link-1.1.4.xpi",
-          "update_hash": "sha256:995e0dc5ec56a358fa3004f488999f2f8375e8bcbda4f27cdf27c7224b48a054",
+          "version": "1.1.6",
+          "update_link": "https://raw.githubusercontent.com/mcryo1108/sansho-link/main/dist/sansho-link-1.1.6.xpi",
+          "update_hash": "sha256:57ba09cea3d2e0091f1996a57b4919f67f77eb13225f4709ae3f2b42d026f5fc",
           "applications": {
             "zotero": {
               "strict_min_version": "9.0",
